@@ -100,8 +100,7 @@ void HttpServer::newConnection()
     if(!connection)
         return;
 
-    auto httpConnection = new HttpClientConnection(connection, this);
-    connect(httpConnection, &HttpClientConnection::requestReceived, this, [=](const HttpRequest &request){
-        handleRequest(httpConnection, request);
-    });
+    auto httpConnection = new HttpClientConnection(*connection, *this);
+    m_clientConnections.insert(httpConnection);
+    connect(httpConnection, &QObject::destroyed, this, [=](){ m_clientConnections.remove(httpConnection); });
 }

@@ -15,6 +15,7 @@ class HttpClientConnection;
 class HttpServer : public QObject
 {
     Q_OBJECT
+    friend class HttpClientConnection;
 
 public:
     explicit HttpServer(QObject *parent = nullptr);
@@ -57,4 +58,6 @@ private Q_SLOTS:
 
 private:
     QTcpServer *m_server;
+
+    QSet<HttpClientConnection *> m_clientConnections;
 };

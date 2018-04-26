@@ -96,5 +96,4 @@ struct HttpResponse {
     QString protocol;
     StatusCode statusCode;
     QHash<QString, QString> headers;
-    QByteArray body;
 };

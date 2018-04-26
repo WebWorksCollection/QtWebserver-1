@@ -49,9 +49,8 @@ void DemoHttpServer::handleRequest(HttpClientConnection *connection, const HttpR
     HttpResponse response;
     response.protocol = request.protocol;
     response.statusCode = HttpResponse::StatusCode::OK;
-    response.body = output.toUtf8();
     response.headers.insert(QStringLiteral("Server"), QStringLiteral("Hatschi Server 1.0"));
     response.headers.insert(QStringLiteral("Content-Type"), QStringLiteral("text/html"));
 
-    connection->sendResponse(response);
+    connection->sendResponse(response, output);
 }

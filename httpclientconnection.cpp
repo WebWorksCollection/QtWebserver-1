@@ -4,35 +4,90 @@
 #include <QTextStream>
 #include <QRegularExpression>
 
-HttpClientConnection::HttpClientConnection(QTcpSocket *socket, QObject *parent) :
-    QObject(parent),
+#include "httpserver.h"
+
+HttpClientConnection::HttpClientConnection(QTcpSocket &socket, HttpServer &httpServer) :
+    QObject(&httpServer),
     m_socket(socket),
+    m_httpServer(httpServer),
     m_state(RequestLine),
     m_bodyLength(-1)
 {
-    m_socket->setParent(this);
+    m_socket.setParent(this);
 
-    connect(m_socket, &QIODevice::readyRead, this, &HttpClientConnection::readyRead);
-    connect(m_socket, &QTcpSocket::disconnected, this, &QObject::deleteLater);
+    connect(&m_socket, &QIODevice::readyRead, this, &HttpClientConnection::readyRead);
+    connect(&m_socket, &QTcpSocket::disconnected, this, &QObject::deleteLater);
 }
 
 void HttpClientConnection::sendResponse(const HttpResponse &response)
 {
-    QTextStream stream(m_socket);
+    if(m_state != WaitingForResponse)
+    {
+        qCritical() << "sending a response now is not allowed!";
+        return;
+    }
+
+    QTextStream stream(&m_socket);
     stream << response.protocol << ' ' << int(response.statusCode) << ' ' << statusString(response.statusCode) << endl;
 
     for(auto iter = response.headers.constBegin(); iter != response.headers.constEnd(); iter++)
         stream << iter.key() << ": " << iter.value() << endl;
 
-    if(!response.body.isEmpty())
-        stream << "Content-Length: " << response.body.length() << endl;
     stream << endl;
-    stream << response.body;
+}
+
+void HttpClientConnection::sendResponse(HttpResponse response, const QByteArray &byteArray)
+{
+    if(m_state != WaitingForResponse)
+    {
+        qCritical() << "sending a response now is not allowed!";
+        return;
+    }
+
+    response.headers.insert(QStringLiteral("Content-Length"), QString::number(byteArray.length()));
+    sendResponse(response);
+    m_socket.write(byteArray);
+    m_state = RequestLine;
+}
+
+void HttpClientConnection::sendResponse(HttpResponse response, const QString &string)
+{
+    if(m_state != WaitingForResponse)
+    {
+        qCritical() << "sending a response now is not allowed!";
+        return;
+    }
+
+    sendResponse(response, string.toUtf8());
+    m_state = RequestLine;
+}
+
+void HttpClientConnection::sendResponse(HttpResponse response, std::unique_ptr<QIODevice> &&device)
+{
+    if(m_state != WaitingForResponse)
+        throw std::runtime_error("sending a response now is not allowed!");
+
+    if(!device->isReadable())
+        throw std::runtime_error("device is not readable");
+
+    if(device->isSequential())
+        throw std::runtime_error("sequental device not supported yet");
+
+    m_sendingDeivce = std::move(device);
+
+    response.headers.insert(QStringLiteral("Content-Length"), QString::number(m_sendingDeivce->size()));
+
+    sendResponse(response);
+
+    connect(&m_socket, &QIODevice::bytesWritten, this, &HttpClientConnection::bytesWritten);
+    bytesWritten();
+
+    m_state = SendingResponse;
 }
 
 void HttpClientConnection::readyRead()
 {
-    m_buffer.append(m_socket->readAll());
+    m_buffer.append(m_socket.readAll());
 
     switch(m_state)
     {
@@ -63,7 +118,7 @@ void HttpClientConnection::readyRead()
             {
                 if(!line.isEmpty())
                 {
-                    static const QRegularExpression regex("^ *([^ :]+) *: *(.*) *$");
+                    static const QRegularExpression regex(QStringLiteral("^ *([^ :]+) *: *(.*) *$"));
 
                     auto match = regex.match(line);
                     if(!match.hasMatch())
@@ -84,7 +139,8 @@ void HttpClientConnection::readyRead()
                     }
                     else
                     {
-                        Q_EMIT requestReceived(m_request);
+                        m_state = WaitingForResponse;
+                        m_httpServer.handleRequest(this, m_request);
                         clearRequest();
                     }
                 }
@@ -102,16 +158,36 @@ void HttpClientConnection::readyRead()
 
         if(m_request.body.count() == m_bodyLength)
         {
-            Q_EMIT requestReceived(m_request);
+            if(!m_buffer.isEmpty())
+                qCritical() << "received more than expected!";
+
+            m_state = WaitingForResponse;
+            m_httpServer.handleRequest(this, m_request);
             clearRequest();
         }
     }
     }
 }
 
+void HttpClientConnection::bytesWritten()
+{
+    if(m_socket.bytesToWrite() >= 1024*1024*4)
+        return;
+
+    if(m_socket.bytesToWrite() == 0 && m_sendingDeivce->bytesAvailable() == 0)
+    {
+        m_state = RequestLine;
+        disconnect(&m_socket, &QIODevice::bytesWritten, this, &HttpClientConnection::bytesWritten);
+        m_sendingDeivce.reset();
+        return;
+    }
+
+    auto buffer = m_sendingDeivce->read(1024*1024*4);
+    m_socket.write(buffer);
+}
+
 void HttpClientConnection::clearRequest()
 {
-    m_state = RequestLine;
     m_request.headers.clear();
     m_request.body.clear();
 }
